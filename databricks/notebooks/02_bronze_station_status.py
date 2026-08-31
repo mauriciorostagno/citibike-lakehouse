@@ -1,10 +1,20 @@
-""" BRONZE LAYER WITH SPARK """
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Bronze · station_status (streaming)
+# MAGIC
+# MAGIC Auto Loader reads only the files it hasn't seen, tracked in the checkpoint.
+# MAGIC `availableNow` processes what's pending and stops, which gives streaming semantics
+# MAGIC without compute running 24/7.
+
+# COMMAND ----------
 
 from pyspark.sql import functions as F
 
 CATALOG    = "citibike"
 LANDING    = f"/Volumes/{CATALOG}/bronze/landing"
 CHECKPOINT = f"/Volumes/{CATALOG}/bronze/checkpoints"
+
+# COMMAND ----------
 
 raw = (spark.readStream
     .format("cloudFiles")
@@ -17,6 +27,8 @@ raw = (spark.readStream
     # Each landed file is one JSON object, not one object per line.
     .option("multiLine", "true")
     .load(f"{LANDING}/station_status"))
+
+# COMMAND ----------
 
 # One row per station per capture. Exploding here keeps the dbt models on flat data;
 # the literal JSON is still in the volume.
@@ -44,8 +56,8 @@ exploded = (raw
         F.current_timestamp().alias("_ingested_at"),
     ))
 
-# availableNow processes what's pending and stops: streaming semantics without compute
-# running 24/7.
+# COMMAND ----------
+
 query = (exploded.writeStream
     .option("checkpointLocation", f"{CHECKPOINT}/station_status")
     .option("mergeSchema", "true")
@@ -53,6 +65,8 @@ query = (exploded.writeStream
     .toTable(f"{CATALOG}.bronze.station_status_raw"))
 
 query.awaitTermination()
+
+# COMMAND ----------
 
 # Spark Connect drops stream metrics once the query ends, so count the table instead.
 display(spark.sql(f"""

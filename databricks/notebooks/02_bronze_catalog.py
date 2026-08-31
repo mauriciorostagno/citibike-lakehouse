@@ -1,22 +1,28 @@
-""" BRONZE LAYER, BATCH BRANCH """
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Bronze · catalog feeds (batch)
+# MAGIC
+# MAGIC The opposite of `02_bronze_station_status` on purpose: no Auto Loader, no
+# MAGIC checkpoint, no incremental state. Every run reads the landed files and replaces
+# MAGIC the table.
+# MAGIC
+# MAGIC Full reload is the right call at 2,500 rows. It costs nothing and removes the
+# MAGIC "did we miss a file?" question entirely. Intermediate states aren't kept here:
+# MAGIC history is the snapshot's job and the raw JSON stays in the volume either way.
 
-# The opposite of 02_bronze_station_status on purpose: no Auto Loader, no checkpoint, no
-# incremental state. Every run reads the landed files and replaces the table.
-#
-# Full reload is the right call at 2,500 rows -- it costs nothing and removes the "did we
-# miss a file?" question entirely. Intermediate states aren't kept here; history is the
-# snapshot's job and the raw JSON stays in the volume either way.
+# COMMAND ----------
 
 from pyspark.sql import functions as F
 
 CATALOG = "citibike"
 LANDING = f"/Volumes/{CATALOG}/bronze/landing"
 
+# COMMAND ----------
 
 def read_latest(feed_name, record_key):
     """Read every landed file for a feed and keep only the most recent capture."""
-    # No inferColumnTypes needed here: Spark's batch JSON reader infers nested structs
-    # on its own. That option only exists to undo an Auto Loader default.
+    # No inferColumnTypes needed: Spark's batch JSON reader infers nested structs on its
+    # own. That option only exists to undo an Auto Loader default.
     raw = (spark.read
         .format("json")
         .option("multiLine", "true")
@@ -31,6 +37,7 @@ def read_latest(feed_name, record_key):
             F.explode(f"payload.data.{record_key}").alias("record"),
         ))
 
+# COMMAND ----------
 
 stations = (read_latest("station_information", "stations")
     .select(
@@ -54,6 +61,8 @@ regions = (read_latest("system_regions", "regions")
         F.col("record.name").alias("region_name"),
         F.current_timestamp().alias("_ingested_at"),
     ))
+
+# COMMAND ----------
 
 for df, table in ((stations, "station_information_raw"), (regions, "system_regions_raw")):
     row_count = df.count()

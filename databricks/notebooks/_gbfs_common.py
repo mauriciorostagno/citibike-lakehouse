@@ -1,7 +1,11 @@
-""" SHARED GBFS INGESTION HELPERS """
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Shared GBFS ingestion helpers
+# MAGIC
+# MAGIC Pulled into the ingestion notebooks with `%run ./_gbfs_common`, so a retry fix or
+# MAGIC a path change only has one home.
 
-# Imported by the ingestion notebooks with `%run ./_gbfs_common`, so a retry fix or a
-# path change only has one home.
+# COMMAND ----------
 
 import json, os, time
 from datetime import datetime, timezone
@@ -14,6 +18,7 @@ BASE    = "https://gbfs.lyft.com/gbfs/1.1/bkn/en"
 # GBFS nests records under data.<something> and the key changes per feed.
 RECORD_KEYS = ("stations", "regions", "bikes", "alerts", "plans")
 
+# COMMAND ----------
 
 def fetch(url, retries=3, backoff=2):
     """Fetch a feed with exponential backoff. Raises if it never succeeds."""
