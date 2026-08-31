@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "dbt": {
+      "command": "uvx",
+      "args": [
+        "--env-file",
+        "C:/Users/danie/Desktop/Mauricie/Data Engineering/Projects/citibike-lakehouse/.env",
+        "--env-file",
+        "C:/Users/danie/Desktop/Mauricie/Data Engineering/Projects/citibike-lakehouse/dbt/.env.mcp",
+        "dbt-mcp"
+      ]
+    }
+  }
+}

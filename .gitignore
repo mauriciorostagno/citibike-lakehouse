@@ -18,9 +18,8 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 
-# OS / editor
+# Tooling / editor / OS
+.claude/
+.vscode/
 .DS_Store
 Thumbs.db
-.vscode/
-dbt/.env.mcp
-.mcp.json
