@@ -1,0 +1,47 @@
+name: dbt CI
+
+# Builds the whole project into ci_ schemas and runs every test. A pull request that
+# breaks a model or a contract goes red before it reaches main.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'dbt/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  build:
+    name: dbt build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: dbt
+
+    env:
+      DBT_DATABRICKS_TOKEN: ${{ secrets.DBT_DATABRICKS_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Pinned to the same version the Databricks job runs, so CI can't pass on a
+      # version production never sees.
+      - name: Install dbt
+        run: pip install dbt-databricks==1.12.4
+
+      - name: Install packages
+        run: dbt deps --profiles-dir .
+
+      - name: Check connection
+        run: dbt debug --profiles-dir . --target ci
+
+      # silver_station_events is excluded: it's a streaming table, which means a
+      # pipeline, and Free Edition allows one active pipeline per type. A second one
+      # would either queue or fail.
+      - name: Build and test
+        run: dbt build --profiles-dir . --target ci --exclude silver_station_events
