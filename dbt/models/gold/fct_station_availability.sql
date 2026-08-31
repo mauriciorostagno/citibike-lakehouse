@@ -2,10 +2,13 @@
     materialized = 'incremental',
     incremental_strategy = 'merge',
     unique_key = ['station_id', 'captured_at'],
-    on_schema_change = 'append_new_columns'
+    on_schema_change = 'append_new_columns',
+    liquid_clustered_by = 'captured_at'
 ) }}
 
 -- One row per station per capture, joined to the station as it was described then.
+-- Clustered on captured_at, same reason as silver: it's what the MERGE and every
+-- downstream query filter on.
 -- The temporal join at the bottom is why the SCD2 dimension exists: an equality join on
 -- station_id would attach today's capacity to a fact from three months ago.
 

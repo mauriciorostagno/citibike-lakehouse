@@ -2,10 +2,13 @@
     materialized = 'incremental',
     incremental_strategy = 'merge',
     unique_key = ['station_id', 'captured_at'],
-    on_schema_change = 'append_new_columns'
+    on_schema_change = 'append_new_columns',
+    liquid_clustered_by = 'captured_at'
 ) }}
 
 -- One row per station per capture, typed and deduped.
+-- Clustered on captured_at: the incremental filter and the MERGE both key off it, and
+-- without clustering the merge scans more of the table every month.
 -- Merge (not append) because bronze can duplicate if a stream is reprocessed --
 -- this way the model lands on the same result however many times it runs.
 -- Lookback window instead of a strict > cutoff so a late capture isn't dropped.
