@@ -1,5 +1,5 @@
-# Safe to commit: no target stores a credential. The local one reads from the
-# environment, the job one gets a short-lived token injected by Databricks at run time.
+# Safe to commit: no target stores a credential. Each one reads its token from the
+# environment, and the job target gets a short-lived one injected by Databricks.
 
 citibike_lakehouse:
   target: dev
@@ -25,4 +25,15 @@ citibike_lakehouse:
       token: "{{ env_var('DBT_ACCESS_TOKEN') }}"
       catalog: citibike
       schema: silver
+      threads: 4
+
+    # Pull requests. generate_schema_name prefixes everything with ci_, so a build here
+    # never touches the real silver and gold. Token comes from a GitHub secret.
+    ci:
+      type: databricks
+      host: dbc-76d096b8-9aa0.cloud.databricks.com
+      http_path: /sql/1.0/warehouses/2d199cdfa88568b6
+      token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
+      catalog: citibike
+      schema: ci_silver
       threads: 4

@@ -1,5 +1,6 @@
 {{ config(
-    materialized = 'streaming_table'
+    materialized = 'streaming_table',
+    schedule = {'every': '2 HOURS'}
 ) }}
 
 -- Append-only log of stations in a notable state.
@@ -7,6 +8,12 @@
 -- 14:35 was empty at 14:35, nothing later revises it. Streaming tables can't merge,
 -- which is why silver_station_status isn't one.
 -- Source is bronze, not silver: streaming reads need an append-only source.
+--
+-- The schedule above is why this model is excluded from the job's dbt build. A streaming
+-- table is a pipeline, and it refreshes on its own cron. Making a 30-minute build wait
+-- for it synchronously is what killed the Spark Connect session at 638 seconds.
+-- Refresh cadence only affects how soon a new event shows up, not its timestamp:
+-- captured_at comes from the data.
 
 select
     station_id,
