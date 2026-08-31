@@ -1,0 +1,34 @@
+name: citibike_lakehouse
+version: 1.0.0
+config-version: 2
+
+profile: citibike_lakehouse
+
+model-paths: ["models"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  citibike_lakehouse:
+    # Push every description from schema.yml into Unity Catalog as a real table and
+    # column comment. The catalog UI, Genie and anyone browsing the data then read the
+    # same documentation the repo carries — instead of it living only in this folder.
+    +persist_docs:
+      relation: true
+      columns: true
+
+    silver:
+      +schema: silver
+      +materialized: incremental
+    gold:
+      +schema: gold
+      +materialized: table
+
+snapshots:
+  citibike_lakehouse:
+    +schema: silver

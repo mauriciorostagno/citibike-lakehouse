@@ -1,0 +1,92 @@
+version: 2
+
+models:
+  - name: silver_station_status
+    description: >
+      One row per station per capture, typed and deduplicated. The grain is the contract:
+      everything downstream assumes one row per (station_id, captured_at), and the
+      compound uniqueness test is what enforces it.
+    columns:
+      - name: station_id
+        description: GBFS station identifier.
+        data_tests: [not_null]
+
+      - name: captured_at
+        description: When the job called the API, in UTC.
+        data_tests: [not_null]
+
+      - name: num_bikes_available
+        description: Rentable bikes at the dock, ebikes included.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: num_docks_available
+        description: Empty docks a rider can return a bike to.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: is_operational
+        description: >
+          Installed, renting and returning. Availability figures only mean something when
+          this is true, so the range tests below are scoped to it.
+        data_tests: [not_null]
+
+      - name: total_docks
+        description: >
+          Physical docks, derived from the four availability counters instead of the
+          catalog. Reads 0 for a switched-off station, hence the scoped test.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 200
+                inclusive: true
+              config:
+                where: "is_operational"
+
+      - name: report_lag_seconds
+        description: >
+          Seconds between the station's own last report and our capture. Large values
+          mean the station went quiet, not that the row is wrong.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -60          # small negatives are clock skew
+                max_value: 86400
+                inclusive: true
+              config:
+                severity: warn          # worth knowing, not worth failing a build
+                where: "is_operational"
+
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, captured_at]
+
+  - name: silver_station_events
+    description: >
+      Append-only log of stations in a notable state. Immutable by nature, which is why
+      this one is a streaming table and silver_station_status is not.
+    columns:
+      - name: station_id
+        data_tests: [not_null]
+      - name: captured_at
+        data_tests: [not_null]
+      - name: event_type
+        description: >
+          Which condition fired. Service status is evaluated before availability: a
+          switched-off station reports zero bikes, and calling that NO_BIKES turns a
+          maintenance problem into a demand statistic.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['OUT_OF_SERVICE', 'DISABLED', 'NOT_RENTING', 'NOT_RETURNING', 'NO_BIKES', 'NO_DOCKS']

@@ -1,0 +1,29 @@
+snapshots:
+  - name: snap_station_information
+    relation: source('bronze', 'station_information_raw')
+    description: >
+      SCD2 over the station catalog. Bronze only holds today's catalog because it's
+      replaced on every run, so this is what turns those overwrites into history: one row
+      per version of a station, with the window it was valid for. Without it, a fact from
+      August could only join to the station name that's current today.
+
+    config:
+      unique_key: station_id
+
+      # check, not timestamp. The feed has no reliable modified-at field and captured_at
+      # moves on every run, so a timestamp strategy would open a new version for 2,500
+      # unchanged stations every day.
+      strategy: check
+      check_cols:
+        - station_name
+        - short_name
+        - latitude
+        - longitude
+        - capacity
+        - region_id
+        - station_type
+        - has_kiosk
+
+      # Close a station's record when it drops out of the feed instead of leaving it
+      # marked current. Already happened once: 2,509 stations to 2,508 overnight.
+      hard_deletes: invalidate

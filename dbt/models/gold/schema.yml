@@ -1,0 +1,124 @@
+version: 2
+
+models:
+  - name: dim_region
+    description: Seven boroughs and districts, plus an unknown member. Static reference data.
+    columns:
+      - name: region_id
+        data_tests: [not_null, unique]
+      - name: region_name
+        data_tests: [not_null]
+
+  - name: dim_station
+    description: >
+      SCD2 station dimension. One row per version of a station, each with the window it
+      was valid for. The earliest version is back-dated to 1970 so facts predating the
+      snapshot still find a match.
+    columns:
+      - name: station_key
+        description: Surrogate key over (station_id, valid_from). Unique per version, not per station.
+        data_tests: [not_null, unique]
+      - name: station_id
+        data_tests: [not_null]
+      - name: valid_from
+        data_tests: [not_null]
+      - name: region_name
+        data_tests: [not_null]
+
+    # One open version per station is enforced by tests/assert_one_current_station_version.sql
+    # -- the rule needs a GROUP BY, which reads better as a singular test.
+
+  - name: fct_station_availability
+    description: >
+      One row per station per capture, joined to the station version current at capture
+      time. Same grain as silver_station_status; what it adds is the dimensional context
+      and the fill rate.
+    columns:
+      - name: captured_at
+        data_tests: [not_null]
+      - name: station_id
+        data_tests: [not_null]
+      - name: station_key
+        description: >
+          Null would mean a fact found no matching station version, i.e. the temporal
+          join failed. That should never happen, which is what this test guards.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_station')
+                field: station_key
+      - name: bike_fill_rate
+        description: Bikes available over capacity. NULL for non-operational stations.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1.5    # over 1 means more bikes than catalog capacity -- real, and worth seeing
+                inclusive: true
+
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, captured_at]
+
+  - name: agg_system_hourly
+    description: >
+      Occupancy by region and hour. The consumption table a time-series chart reads
+      directly, with no aggregation left at query time.
+    columns:
+      - name: hour_start
+        data_tests: [not_null]
+      - name: region_name
+        data_tests: [not_null]
+      - name: avg_fill_rate
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1.5
+                inclusive: true
+      - name: empty_rate
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+      - name: downtime_rate
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [hour_start, region_id]
+
+  - name: mart_station_health
+    description: >
+      One row per station, scoring how it behaved across the observed window and marking
+      the behaviour chronic or episodic. Feeds the map and the rankings.
+    columns:
+      - name: station_id
+        data_tests: [not_null, unique]
+      - name: station_name
+        description: Null would mean the station has no current dimension version.
+        data_tests: [not_null]
+      - name: health_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - 'CHRONIC_OUTAGE'
+                  - 'CHRONICALLY_EMPTY'
+                  - 'CHRONICALLY_FULL'
+                  - 'EPISODICALLY_EMPTY'
+                  - 'EPISODICALLY_FULL'
+                  - 'HEALTHY'
+      - name: is_chronic
+        data_tests: [not_null]

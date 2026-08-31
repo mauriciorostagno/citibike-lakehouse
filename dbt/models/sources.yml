@@ -1,0 +1,51 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: citibike
+    schema: bronze
+    description: >
+      Raw tables written by the Spark ingestion notebooks. Append-only by design: bronze
+      can hold duplicates if a stream is reprocessed, and silver is what converges to a
+      single row per grain.
+
+    tables:
+      - name: station_status_raw
+        description: One row per station per capture, exploded from the GBFS station_status feed.
+        config:
+          loaded_at_field: _ingested_at
+          freshness:
+            warn_after: {count: 2, period: hour}
+            error_after: {count: 6, period: hour}
+        columns:
+          - name: station_id
+            description: GBFS station identifier.
+          - name: captured_at
+            description: When the job called the API, in UTC. Not when the station reported.
+          - name: last_reported
+            description: Unix epoch of the station's own last report, straight from the feed.
+          - name: _rescued_data
+            description: Fields present upstream but missing from the inferred schema. Non-null means the feed changed.
+
+      - name: station_information_raw
+        description: >
+          The station catalog as of the latest daily capture. Replaced in full on every
+          run, so it has no history of its own -- that's the snapshot's job.
+        config:
+          loaded_at_field: _ingested_at
+          freshness:
+            warn_after: {count: 36, period: hour}
+            error_after: {count: 72, period: hour}
+        columns:
+          - name: station_id
+            description: GBFS station identifier. Joins to station_status_raw.
+          - name: capacity
+            description: Physical docks the station was built with.
+          - name: region_id
+            description: Joins to system_regions_raw.
+
+      - name: system_regions_raw
+        description: Seven rows mapping region_id to a borough or district name.
+        columns:
+          - name: region_id
+          - name: region_name

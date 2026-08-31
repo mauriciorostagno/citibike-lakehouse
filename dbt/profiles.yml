@@ -1,0 +1,12 @@
+# Safe to commit: the token is read from the environment, never stored here.
+citibike_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      host: dbc-76d096b8-9aa0.cloud.databricks.com
+      http_path: /sql/1.0/warehouses/2d199cdfa88568b6
+      token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
+      catalog: citibike
+      schema: silver
+      threads: 4

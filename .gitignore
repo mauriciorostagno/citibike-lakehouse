@@ -1,0 +1,26 @@
+# Secrets: never, under any circumstance
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# dbt
+target/
+dbt_packages/
+logs/
+.user.yml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+dbt/.env.mcp
+.mcp.json
