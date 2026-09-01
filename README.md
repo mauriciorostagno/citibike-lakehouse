@@ -1,39 +1,172 @@
 # CitiBike Lakehouse
 
-A lakehouse built on Databricks Free Edition over live Citi Bike (NYC) data.
-One source enters through two paths: an incremental one using Structured Streaming
-with checkpoints, and a batch one with SCD2 historization.
+A lakehouse over live Citi Bike NYC data, built on Databricks Free Edition.
+
+The same source enters through two paths: one incremental, using Structured Streaming
+with checkpoints, and one batch, historised as a type 2 slowly changing dimension. It
+runs on its own every 30 minutes, tests itself on every pull request, and alerts if the
+ingestion stalls.
+
+**Repo:** [mauriciorostagno/citibike-lakehouse](https://github.com/mauriciorostagno/citibike-lakehouse)
+
+---
+
+## What it does
+
+Every 30 minutes it captures the state of 2,509 bike stations from the public GBFS
+feeds, lands the raw JSON, and turns it into a dimensional model that answers two
+questions a bike-share operator actually has:
+
+- Which stations are broken, and which ones just run out of bikes at rush hour?
+- How does system occupancy move across the day, by borough?
+
+Those are different problems with different owners. One is a maintenance ticket, the
+other is a redistribution truck. The gold layer separates them in a column.
 
 ## Stack
 
-Databricks (serverless) · PySpark Structured Streaming · Auto Loader · Delta Lake ·
-Unity Catalog · dbt · Databricks Workflows
+Databricks Free Edition (serverless) · PySpark Structured Streaming · Auto Loader ·
+Delta Lake · Unity Catalog · dbt · Databricks Workflows · GitHub Actions
 
 ## Architecture
 
-| Layer | Tool | What it does |
+| Layer | Tool | What happens |
 |---|---|---|
-| Landing | Python + requests | Pulls raw JSON from the GBFS API into a Unity Catalog volume |
-| Bronze | PySpark + Auto Loader | Reads incrementally with a checkpoint, explodes the station array |
-| Silver | dbt | Incremental model with MERGE, typing and cleanup |
-| Gold | dbt | Facts and dimensions, SCD2 snapshot |
+| Landing | Python + requests | Raw JSON written to a Unity Catalog volume, partitioned by capture date. No transformation. |
+| Bronze (stream) | PySpark + Auto Loader | Reads only unseen files, tracked in a checkpoint. `availableNow` trigger. |
+| Bronze (batch) | PySpark | Full overwrite of the station catalog. No checkpoint, no incremental state. |
+| Silver | dbt | Incremental model with MERGE, a streaming table for events, and an SCD2 snapshot. |
+| Gold | dbt | Star schema plus two consumption marts. |
+| Serving | AI/BI dashboard + Genie | Map, time series and rankings. Natural-language querying over gold. |
 
-## Source
+## Data source
 
-GBFS feeds from Citi Bike NYC (`https://gbfs.lyft.com/gbfs/1.1/bkn/en`):
+[GBFS feeds](https://gbfs.lyft.com/gbfs/1.1/bkn/en) from Citi Bike NYC. No auth.
 
-- `station_status.json` — 2,509 stations, refreshed every ~10s. Incremental.
-- `station_information.json` — station catalog. Batch, historized as SCD2.
-- `system_regions.json` — 7 regions. Static dimension.
+| Feed | Changes | Path |
+|---|---|---|
+| `station_status` | every ~10s | incremental |
+| `station_information` | every few weeks | batch, SCD2 |
+| `system_regions` | 7 rows, static | dimension |
 
-## Layout
+## How it runs
 
-    databricks/notebooks/   Ingestion and bronze notebooks
-    dbt/                    dbt project: silver and gold
-    .env                    Databricks token (not versioned)
+| Job | Schedule | Tasks |
+|---|---|---|
+| `status_pipeline_30min` | every 30 min | ingest -> bronze -> `dbt source freshness` -> `dbt build` |
+| `catalog_pipeline_daily` | 05:00 UTC | ingest -> bronze |
+| Streaming table pipeline | every 2 hours | refreshes itself |
 
-## Setup
+The dbt task runs from this repository, so every execution runs exactly what is on
+`main`. The freshness check goes before the build on purpose: if bronze has not received
+data in six hours, the job stops rather than rebuilding gold on stale input.
 
-1. Copy `.env.example` to `.env` and fill in `DBT_DATABRICKS_TOKEN`.
-2. `pip install dbt-databricks`
-3. `cd dbt && dbt debug --profiles-dir .`
+Pull requests build the whole project into `ci_` schemas and run all 43 tests before
+anything reaches `main`.
+
+## Design decisions
+
+**Spark cannot pull from a REST API incrementally.** There is no
+`readStream.format("http")`, so extraction is plain Python. Incrementality starts once
+the data has landed somewhere Spark can read.
+
+**Incremental is a property of the read, not of the data.** The API always returns all
+2,509 stations. Auto Loader is incremental because of its checkpoint; dbt is incremental
+because of `max(captured_at)` in the target.
+
+**MERGE, not APPEND, in silver.** Bronze is append-only and can duplicate if a stream is
+reprocessed. MERGE on `(station_id, captured_at)` makes the model converge to the same
+result however many times it runs.
+
+**A lookback window instead of a strict cutoff.** A strict `> max(captured_at)` would
+silently drop a capture that landed late. The window re-reads recent rows and the MERGE
+collapses them onto the same key.
+
+**A streaming table for events, an incremental merge for state.** Streaming tables cannot
+MERGE, so they suit immutable events and not corrected state. Materialisation follows the
+semantics of the data.
+
+**`check` over `timestamp` for the snapshot.** The feed has no reliable modified-at field
+and `captured_at` moves every run, so a timestamp strategy would open a new version for
+2,500 unchanged stations every day.
+
+**The temporal join is the point of SCD2:**
+
+```sql
+and s.captured_at >= d.valid_from
+and (d.valid_to is null or s.captured_at < d.valid_to)
+```
+
+An equality join on `station_id` would attach today's capacity to a fact from three
+months ago. This attaches the capacity that was on record when the measurement was taken.
+
+## Testing
+
+43 tests, grouped by the risk each one covers.
+
+| Family | Count | Catches |
+|---|---|---|
+| `unique_combination_of_columns` | 3 | A model losing its declared grain |
+| `not_null` | ~20 | Orphaned rows and failed joins |
+| `accepted_range` | 7 | Impossible values, two of them scoped to operational stations |
+| `accepted_values` | 2 | A CASE returning NULL because no branch matched |
+| `relationships` | 1 | Broken referential integrity |
+| Singular tests | 3 | Schema drift, dimension fan-out, orphaned facts |
+
+## What I ran into
+
+**972 events were labelled as demand when they were failures.** The event CASE checked
+availability before service status. A switched-off station reports zero bikes, so every
+dead station was filed under NO_BIKES. A ranking of "stations that run out of bikes"
+would have been topped by broken hardware. Found by noticing 545 rows with
+`is_renting = false` while the event log had zero NOT_RENTING events.
+
+**`relationships` ignores NULLs.** It passed on five orphaned facts while `not_null`
+failed on the same column. A relationships test without a not_null beside it is half a
+validation.
+
+**A failing test is not automatically a data problem.** `total_docks >= 1` failed on 924
+rows because switched-off stations report zero docks. The assumption was wrong, not the
+data. Scoping the test with `config: where:` was the fix; loosening the bound would have
+hidden it.
+
+**Auto Loader infers every column as STRING by default.** Without
+`cloudFiles.inferColumnTypes=true`, nested JSON arrives as text and the explode fails.
+
+**The checkpoint and the target table are one unit.** Deleting the checkpoint without
+truncating the table turned 12,545 rows into 22,581. The deeper fix was silver merging
+rather than appending, which makes that mistake stop mattering.
+
+**A dbt token scoped to BI Tools cannot refresh a streaming table.** Streaming tables are
+pipelines under the hood and need the `pipelines` scope alongside `sql`.
+
+## Running it
+
+```bash
+cp .env.example .env          # add your Databricks token
+python -m venv .venv && source .venv/bin/activate
+pip install dbt-databricks==1.12.4
+
+cd dbt
+dbt deps --profiles-dir .
+dbt build --profiles-dir .
+```
+
+The Databricks side (catalog, volumes, jobs) is in `databricks/`. Run
+`databricks/sql/00_setup_unity_catalog.sql` first.
+
+## Repo layout
+
+```
+databricks/notebooks/   Ingestion and bronze notebooks
+databricks/sql/         Catalog setup, data quality checks, alert query
+dbt/                    Models, snapshot, tests, macros
+docs/PROJECT_STATE.md   Working notes and design rationale
+.github/workflows/      CI
+```
+
+## Next
+
+Citi Bike publishes historical trip data with origin and destination per ride. That turns
+the availability snapshots into an origin-destination model and gives Spark a volume
+worth the name. It deserves its own build rather than an appendix to this one.
