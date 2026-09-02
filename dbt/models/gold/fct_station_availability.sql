@@ -10,7 +10,7 @@
 -- Clustered on captured_at, same reason as silver: it's what the MERGE and every
 -- downstream query filter on.
 -- The temporal join at the bottom is why the SCD2 dimension exists: an equality join on
--- station_id would attach today's capacity to a fact from three months ago.
+-- station_id would label a fact from three months ago with today's name and region.
 
 with status as (
 
@@ -45,11 +45,14 @@ select
     s.total_docks,
     d.capacity,
 
-    -- Measured against the capacity on record at capture time. NULL when the station
-    -- wasn't operating -- a fill rate on a switched-off station means nothing.
+    -- Divided by the docks the station is actually reporting, not the catalog capacity:
+    -- capacity sits below the live dock count on 1828 of 2509 stations, so it is not a
+    -- denominator you can trust. total_docks comes from the same feed and the same
+    -- instant as the numerator, which keeps the ratio inside 0..1 by construction.
+    -- NULL when the station was not operating -- a fill rate there means nothing.
     case
-        when s.is_operational and d.capacity > 0
-        then round(s.num_bikes_available / d.capacity, 4)
+        when s.is_operational and s.total_docks > 0
+        then round(s.num_bikes_available / s.total_docks, 4)
     end as bike_fill_rate,
 
     s.is_operational,
