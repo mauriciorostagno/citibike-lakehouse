@@ -3,11 +3,11 @@
 Working notes for anyone picking this up mid-flight. The README covers what the project
 is; this file covers how it got there and what is still open.
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-02.
 
 ## Status
 
-Complete and running unattended. `dbt build` covers 7 models, 1 snapshot and 43 tests.
+Complete and running unattended. `dbt build` covers 7 models, 1 snapshot and 44 tests.
 Both ingestion jobs and the dbt task run on schedule, CI runs on every pull request, and
 two independent monitors watch for a stall.
 
@@ -29,7 +29,11 @@ the job at run time), `ci` (GitHub secret, prefixes schemas with `ci_`).
 ## Free Edition limits that shaped decisions
 
 - Outbound internet is blocked until the account is LinkedIn-verified.
-- One SQL warehouse, 2X-Small.
+- One SQL warehouse, 2X-Small, provisioned by Databricks. There is no Edit button: the
+  10-minute auto-stop cannot be changed and no second warehouse can be created.
+- A daily compute allowance. A job every 30 minutes against a 10-minute auto-stop kept
+  the warehouse alive roughly eight hours a day and exhausted it, which is why the status
+  job runs hourly and the alert every six hours.
 - One active pipeline per type. The streaming table uses it, which is why CI excludes it.
 - Max 5 concurrent job tasks.
 - No Scala or R.
@@ -38,12 +42,21 @@ the job at run time), `ci` (GitHub secret, prefixes schemas with `ci_`).
 
 Two layers, on purpose. `dbt source freshness` runs inside the job before the build, so a
 stale bronze stops the pipeline instead of feeding gold. A separate Databricks alert
-queries `station_status_raw` hourly and fires above 90 minutes without a capture. The
-second one exists because a monitor living inside the job cannot report that the job
-stopped running.
+checks every six hours and fires above 150 minutes without a capture. The second one
+exists because a monitor living inside the job cannot report that the job stopped
+running.
+
+The 150-minute threshold is two and a half missed captures. At the old 30-minute cadence
+it was 90 minutes; hourly captures made that a false-positive generator.
 
 ## Gotchas already hit
 
+- Catalog `capacity` is not a denominator. It sits below the live dock count on 1,828 of
+  2,509 stations, and one station went from 39 to 1 overnight, which pushed its fill rate
+  to 6.0 and stopped the build. `total_docks` comes from the same feed and instant as the
+  numerator, so the ratio holds in 0..1 by construction.
+- Both times a range test failed here, the problem was in the model and not in the bound.
+  Widening it would have hidden the problem instead of showing it.
 - Auto Loader infers every column as STRING unless `cloudFiles.inferColumnTypes=true`.
   Changing it requires deleting the `schemaLocation`.
 - The checkpoint and the target table are one unit. Resetting one without the other
@@ -71,8 +84,8 @@ stopped running.
 
 ## Known limitations
 
-- Captures are 30 minutes apart, so "average occupancy per hour" is two observations per
-  hour, not a continuous average.
+- Captures are an hour apart, so "average occupancy per hour" is one observation per
+  hour, not a continuous average. Driven by the compute allowance, not by the analysis.
 - One station in the status feed is missing from the catalog feed. It lands on the unknown
   member and `assert_no_unknown_station_facts` warns about it every run, by design.
 - CI schemas are never cleaned up. At this volume it does not matter; at a real one it

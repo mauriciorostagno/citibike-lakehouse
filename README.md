@@ -4,16 +4,19 @@ A lakehouse over live Citi Bike NYC data, built on Databricks Free Edition.
 
 The same source enters through two paths: one incremental, using Structured Streaming
 with checkpoints, and one batch, historised as a type 2 slowly changing dimension. It
-runs on its own every 30 minutes, tests itself on every pull request, and alerts if the
+runs on its own every hour, tests itself on every pull request, and alerts if the
 ingestion stalls.
 
 **Repo:** [mauriciorostagno/citibike-lakehouse](https://github.com/mauriciorostagno/citibike-lakehouse)
+· **More screenshots:** [docs/SHOWCASE.md](docs/SHOWCASE.md)
+
+![Architecture](docs/img/architecture.svg)
 
 ---
 
 ## What it does
 
-Every 30 minutes it captures the state of 2,509 bike stations from the public GBFS
+Every hour it captures the state of around 2,500 bike stations from the public GBFS
 feeds, lands the raw JSON, and turns it into a dimensional model that answers two
 questions a bike-share operator actually has:
 
@@ -22,6 +25,8 @@ questions a bike-share operator actually has:
 
 Those are different problems with different owners. One is a maintenance ticket, the
 other is a redistribution truck. The gold layer separates them in a column.
+
+![Dashboard](docs/img/dashboard.png)
 
 ## Stack
 
@@ -39,6 +44,8 @@ Delta Lake · Unity Catalog · dbt · Databricks Workflows · GitHub Actions
 | Gold | dbt | Star schema plus two consumption marts. |
 | Serving | AI/BI dashboard + Genie | Map, time series and rankings. Natural-language querying over gold. |
 
+![Lineage](docs/img/lineage.png)
+
 ## Data source
 
 [GBFS feeds](https://gbfs.lyft.com/gbfs/1.1/bkn/en) from Citi Bike NYC. No auth.
@@ -53,7 +60,7 @@ Delta Lake · Unity Catalog · dbt · Databricks Workflows · GitHub Actions
 
 | Job | Schedule | Tasks |
 |---|---|---|
-| `status_pipeline_30min` | every 30 min | ingest -> bronze -> `dbt source freshness` -> `dbt build` |
+| `status_pipeline_hourly` | hourly | ingest -> bronze -> `dbt source freshness` -> `dbt build` |
 | `catalog_pipeline_daily` | 05:00 UTC | ingest -> bronze |
 | Streaming table pipeline | every 2 hours | refreshes itself |
 
@@ -61,7 +68,11 @@ The dbt task runs from this repository, so every execution runs exactly what is 
 `main`. The freshness check goes before the build on purpose: if bronze has not received
 data in six hours, the job stops rather than rebuilding gold on stale input.
 
-Pull requests build the whole project into `ci_` schemas and run all 43 tests before
+A separate Databricks SQL alert checks every six hours that bronze has captured
+something in the last 150 minutes. Two monitors, because one that lives inside the job
+cannot report that the job stopped running.
+
+Pull requests build the whole project into `ci_` schemas and run all 44 tests before
 anything reaches `main`.
 
 ## Design decisions
@@ -70,8 +81,8 @@ anything reaches `main`.
 `readStream.format("http")`, so extraction is plain Python. Incrementality starts once
 the data has landed somewhere Spark can read.
 
-**Incremental is a property of the read, not of the data.** The API always returns all
-2,509 stations. Auto Loader is incremental because of its checkpoint; dbt is incremental
+**Incremental is a property of the read, not of the data.** The API always returns every
+station. Auto Loader is incremental because of its checkpoint; dbt is incremental
 because of `max(captured_at)` in the target.
 
 **MERGE, not APPEND, in silver.** Bronze is append-only and can duplicate if a stream is
@@ -90,6 +101,18 @@ semantics of the data.
 and `captured_at` moves every run, so a timestamp strategy would open a new version for
 2,500 unchanged stations every day.
 
+**The fill rate divides by the docks the station reports, not by catalog capacity.**
+`capacity` comes from the catalog feed and sits below the live dock count on 1,828 of
+2,509 stations. It is a nominal figure nobody keeps in sync. `total_docks` comes from the
+same feed and the same instant as the numerator, which puts the ratio inside 0 to 1 by
+construction. That lets the range test check something provable instead of a bound I
+picked.
+
+**One schedule per compute budget.** Free Edition gives a fixed 10-minute auto-stop that
+cannot be changed and a daily compute allowance. A job every 30 minutes kept the
+warehouse alive roughly eight hours a day and exhausted the allowance. Hourly captures
+cost half that and still resolve the rush-hour pattern the analysis is about.
+
 **The temporal join is the point of SCD2:**
 
 ```sql
@@ -97,23 +120,36 @@ and s.captured_at >= d.valid_from
 and (d.valid_to is null or s.captured_at < d.valid_to)
 ```
 
-An equality join on `station_id` would attach today's capacity to a fact from three
-months ago. This attaches the capacity that was on record when the measurement was taken.
+An equality join on `station_id` would label a fact from three months ago with today's
+name and region. This attaches the description that was on record when the measurement
+was taken, which is also what dates a change in the source.
 
 ## Testing
 
-43 tests, grouped by the risk each one covers.
+44 tests, grouped by the risk each one covers.
 
 | Family | Count | Catches |
 |---|---|---|
-| `unique_combination_of_columns` | 3 | A model losing its declared grain |
-| `not_null` | ~20 | Orphaned rows and failed joins |
-| `accepted_range` | 7 | Impossible values, two of them scoped to operational stations |
+| `not_null` | 23 | Orphaned rows and failed joins |
+| `dbt_utils.accepted_range` | 8 | Impossible values, three of them scoped to operational stations |
+| `unique` and `unique_combination_of_columns` | 6 | A model losing its declared grain |
 | `accepted_values` | 2 | A CASE returning NULL because no branch matched |
 | `relationships` | 1 | Broken referential integrity |
-| Singular tests | 3 | Schema drift, dimension fan-out, orphaned facts |
+| Singular tests | 4 | Schema drift, dimension fan-out, orphaned facts, implausible catalog capacity |
+
+Two of them warn instead of failing. Both flag conditions in the source that I cannot
+fix from here, and neither one corrupts a number downstream.
 
 ## What I ran into
+
+**The catalog changed a station's capacity from 39 to 1 overnight.** The fill rate for
+that station jumped to 6.0, the range test failed, and the build stopped before
+`agg_system_hourly` and `mart_station_health` could rebuild. Raising the bound would have
+passed the test and pushed a 600% occupancy figure into the dashboard. Looking at the
+rows instead showed the real problem: catalog capacity is below the live dock count on
+most of the system, so it was never a denominator to divide by. The SCD2 dimension dated
+the change to 08:57 that morning, which is how I knew it was the source and not the
+model.
 
 **972 events were labelled as demand when they were failures.** The event CASE checked
 availability before service status. A switched-off station reports zero bikes, so every
@@ -161,6 +197,7 @@ The Databricks side (catalog, volumes, jobs) is in `databricks/`. Run
 databricks/notebooks/   Ingestion and bronze notebooks
 databricks/sql/         Catalog setup, data quality checks, alert query
 dbt/                    Models, snapshot, tests, macros
+docs/SHOWCASE.md        Screenshots of the pipeline running
 docs/PROJECT_STATE.md   Working notes and design rationale
 .github/workflows/      CI
 ```
